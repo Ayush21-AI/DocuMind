@@ -1,0 +1,2 @@
+constants:
+  keyVault: &keyVault documind-dev-platform

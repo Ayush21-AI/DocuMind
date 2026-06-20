@@ -1,0 +1,43 @@
+# === Security Overrides ===
+# CVE-2025-66471, CVE-2025-66418, CVE-2026-21441
+urllib3==2.6.0
+requests==2.32.3
+
+# FastAPI and ASGI Server
+fastapi==0.128.1
+uvicorn[standard]==0.40.0         # Includes uvloop, httptools, and watchfiles for max performance
+orjson==3.11.7                   # Blazing fast JSON parser/serializer
+
+# HTTP Clients
+httpx==0.28.1
+
+# PDF Text Extraction
+pymupdf==1.26.7
+
+# DOCX Extraction
+python-docx==1.2.0
+
+# XLSX Extraction
+openpyxl==3.1.5
+
+opencv-python-headless==4.13.0.90
+numpy==2.4.2
+rapidocr==3.6.0  # Main RapidOCR package with Python 3.13 support
+onnxruntime==1.22.0  # Required separately since RapidOCR 3.5+
+sympy==1.14.0  # Security fix for XXE vulnerability
+protobuf==6.33.5 # Security fix for CVE-2025-4565
+Pillow==12.0.0  # Security fix for CVE-2023-4863/CVE-2023-5129
+
+# Multipart Uploads (for UploadFile support)
+python-multipart==0.0.22
+
+# Async Caching
+async-lru==2.1.0
+
+# === Retry Logic ===
+tenacity==9.1.2
+
+# Pydantic (comes with FastAPI but can version-pin explicitly)
+pydantic==2.12.5
+pydantic-core==2.41.5
+

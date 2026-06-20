@@ -1,0 +1,146 @@
+name: Build & Push
+
+on:
+  push:
+    branches:
+      - main
+      - 'release/**'
+  pull_request:
+    branches:
+      - main
+      - 'release/**'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to use for the Docker image"
+        required: false  
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to use for the Docker image"
+        required: false
+        type: string
+        
+env: 
+  UNIQUE_ID: ${{ github.run_id }}
+
+jobs:
+  determine-tag:
+    name: Determine Docker Image Tag
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.determine_tag.outputs.IMAGE_TAG }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history so we can access tags
+
+      - name: Determine Image Tag
+        id: determine_tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+        run: |
+          # Retrieve the branch name from GITHUB_REF
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          echo "Branch Name: $BRANCH_NAME"
+
+          # Retrieve the event name (e.g., push, pull_request, workflow_dispatch)
+          EVENT_NAME="${GITHUB_EVENT_NAME}"
+          echo "Event Name: $EVENT_NAME"
+
+          # Function to get the latest Git tag matching vX.X.X
+          get_latest_tag() {
+            git describe --tags --match "v[0-9]*.[0-9]*.[0-9]*" --abbrev=0 2>/dev/null || echo "v1.0.0"
+          }
+
+          # Retrieve the latest tag and remove the 'v' prefix
+          LATEST_TAG=$(get_latest_tag)
+          echo "Latest Git Tag: $LATEST_TAG"
+          CLEAN_TAG=${LATEST_TAG#v}
+          echo "Clean Tag: $CLEAN_TAG"
+
+          # Initialize TAG variable
+          TAG=""
+
+          # If an INPUT_TAG is provided, we allow overriding only for non-release builds
+          # or for release builds when manually triggered.
+          if [ -n "$INPUT_TAG" ]; then
+            if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" || "$BRANCH_NAME" == release/* ]]; then
+              if [ "$EVENT_NAME" == "workflow_dispatch" ]; then
+                TAG="$INPUT_TAG"
+                echo "Using manually provided release image tag: $TAG"
+              else
+                echo "Automated builds on release branches cannot override the major version. Using computed tag: $CLEAN_TAG"
+                TAG="$CLEAN_TAG"
+              fi
+            else
+              TAG="$INPUT_TAG"
+              echo "Using provided image tag for non-release branch: $TAG"
+            fi
+          else
+            # No input tag provided, so compute the tag
+            if [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "master" || "$BRANCH_NAME" == release/* ]]; then
+              # For release branches, always use the clean tag
+              TAG="$CLEAN_TAG"
+              echo "Using computed release image tag: $TAG"
+            else
+              # For non-release branches, increment the patch version and append commit hash and a random string
+              COMMIT_HASH=$(git rev-parse --short HEAD)
+              # Generate a random 8-character alphanumeric string
+              RANDOM_STR=$(head /dev/urandom | tr -dc a-z0-9 | head -c 8)
+              IFS='.' read -r major minor patch <<< "$CLEAN_TAG"
+              new_patch=$((patch + 1))
+              TAG="${major}.${minor}.${new_patch}-${COMMIT_HASH}-${RANDOM_STR}"
+              echo "Using calculated image tag for non-release branch: $TAG"
+            fi
+          fi
+
+          # Output the tag for use by subsequent workflow steps
+          echo "IMAGE_TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "Determined Image Tag: $TAG"
+                
+  build-and-push:
+    name: Build and Push Docker Images
+    needs: determine-tag
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        service:
+          - ocr
+          - ollama
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0  # Fetch all history so we can access tags
+
+      - uses: Azure/login@v1
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - uses: Azure/get-keyvault-secrets@v1
+        id: get-secrets
+        with:
+          keyvault: "myorg-gh-actions"
+          secrets: "ACR-LOGINSERVER, ACR-PASSWORD, ACR-USERNAME, AZURE-SUBSCRIPTION-ID"
+
+      - name: Log in to ACR
+        uses: docker/login-action@v2
+        with:
+          registry: ${{ steps.get-secrets.outputs.ACR-LOGINSERVER }}
+          username: ${{ steps.get-secrets.outputs.ACR-USERNAME }}
+          password: ${{ steps.get-secrets.outputs.ACR-PASSWORD }}
+
+      - name: Build Docker Image
+        run: |
+          APP=${{  matrix.service  }}
+          cd $APP
+
+          echo "--- BUILDING OCR DOCKER IMAGE ---"
+          docker build . -t ${{ steps.get-secrets.outputs.ACR-LOGINSERVER }}/documind-$APP:${{ needs.determine-tag.outputs.image_tag }}
+
+      - name: Push Docker Image
+        run: |
+          APP=${{  matrix.service  }}
+          docker push ${{ steps.get-secrets.outputs.ACR-LOGINSERVER }}/documind-$APP:${{ needs.determine-tag.outputs.image_tag }}

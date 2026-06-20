@@ -1,0 +1,37 @@
+replicaCount: 1
+
+image:
+  pullPolicy: Always
+  repository: myorgregistry.azurecr.io/documind-ocr
+  tag: latest # override in CD pipeline.
+
+fullnameOverride: "documind-ocr-ms"
+
+# ingress:
+#   annotations:
+#     appgw.ingress.kubernetes.io/connection-draining: "true"
+#     appgw.ingress.kubernetes.io/connection-draining-timeout: "30"
+#     # appgw.ingress.kubernetes.io/rewrite-rule-set: security-response-headers
+#     appgw.ingress.kubernetes.io/ssl-redirect: "true"
+#     cert-manager.io/cluster-issuer: letsencrypt
+#     kubernetes.io/ingress.class: azure/application-gateway
+
+app:
+  port: 8000
+  health:
+    liveUrl: /status
+    readyUrl: /status
+
+resources:
+  requests:
+    memory: 4Gi
+    cpu: 2
+  limits:
+    memory: 8Gi
+    cpu: 4
+
+tolerations:
+  - effect: NoSchedule
+    key: dedicated
+    operator: Equal
+    value: app

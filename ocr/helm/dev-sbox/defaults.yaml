@@ -1,0 +1,13 @@
+constants:
+  ocrHost: &ocrHost ocr.dev.example.com
+  keyVault: &keyVault documind-dev-platform
+
+env: 
+  OLLAMA_HOST: "http://documind-ollama-ms:11434"
+  MODEL_NAME: "llama3.2:latest"
+  FASTAPI_PORT: 8000
+  FASTAPI_HOST: ""
+  TEMP_DIR: "/var/tmp"
+  LOGLEVEL: "DEBUG"
+  SYSTEM_PROMPT: ""
+  OCR_SYSTEM_PROMPT: ""
