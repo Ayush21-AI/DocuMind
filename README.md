@@ -16,20 +16,25 @@ APIs, no keys, no data leaving your infrastructure.
 
 ## Live demo
 
-**Run it locally in 10 seconds — no LLM or GPU needed:**
+![DocuMind demo — confidence-scored extraction](docs/demo.png)
+
+*Pick a sample invoice/receipt and DocuMind extracts each field, colour-codes it
+by confidence, flags low-confidence results for review, and returns a full JSON
+envelope — running the real classifier, validators and confidence scorer with
+no LLM or GPU.*
+
+**Run it locally in ~10 seconds:**
 
 ```bash
+git clone https://github.com/Ayush21-AI/DocuMind.git && cd DocuMind
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r demo/requirements.txt
-python demo/app.py        # opens a Gradio UI in your browser
+python demo/app.py            # → open http://localhost:7860
 ```
 
-The demo runs the *real* classifier, Pydantic validators and confidence scorer
-on bundled invoices/receipts — colour-coding each field by confidence and
-flagging a low-quality scan for review. See [Deploy the demo free](#deploy-the-demo-free)
-to host it on a Hugging Face Space.
+To host it free on a Hugging Face Space, see [Deploy the demo free](#deploy-the-demo-free).
 
-<!-- After deploying, add: 🔗 **Live:** https://huggingface.co/spaces/<you>/documind-demo
-     and drop a demo GIF here for the strongest first impression. -->
+<!-- After deploying, add: 🔗 **Live:** https://huggingface.co/spaces/<you>/documind-demo -->
 
 ## The problem
 
@@ -168,17 +173,31 @@ the same envelope:
 
 **Supported file types:** `.pdf`, `.png`, `.jpg`, `.jpeg`, `.docx`, `.xlsx`
 
-## Quickstart
+## Run the full stack (real OCR + LLM)
 
-### One command (recommended)
+> **Prerequisite:** Docker Desktop running. The first build pulls the ~2 GB
+> Llama 3.2 model into the image, so it takes a few minutes; subsequent runs are instant.
+
+### Option A — one command (recommended)
 
 ```bash
+git clone https://github.com/Ayush21-AI/DocuMind.git && cd DocuMind
 docker compose up --build
-# API on http://localhost:8000, Ollama on http://localhost:11434
-curl -F "file=@invoice.pdf" http://localhost:8000/extract
 ```
 
-### Local development
+This starts both services — the API on `http://localhost:8000` and Ollama on
+`http://localhost:11434`. Then:
+
+```bash
+# extract from your own document (auto-detects invoice vs receipt)
+curl -F "file=@/path/to/invoice.pdf" http://localhost:8000/extract
+```
+
+- Interactive API docs (Swagger UI): **http://localhost:8000/docs**
+- Health: **http://localhost:8000/status** · Metrics: **http://localhost:8000/metrics**
+- Or open the Gradio demo's **"Live API"** tab and point it at `http://localhost:8000`.
+
+### Option B — run the API directly (Ollama separate)
 
 ```bash
 # 1. Ollama + model
