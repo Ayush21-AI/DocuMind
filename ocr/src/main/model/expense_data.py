@@ -1,40 +1,42 @@
-import re
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, Field, model_validator
+
+from ocr.src.main.confidence import AMOUNT, DATE, TEXT
+from ocr.src.main.utils.currency import normalize_amount
+from ocr.src.main.utils.dates import normalize_date
 
 
 class ExpenseData(BaseModel):
-    invoiceDate: str = ""
-    transactionAmount: str = ""
-    description: str = ""
+    """3-field receipt/expense schema (date, amount, description)."""
+
+    invoiceDate: str = Field(default="", description="Transaction/receipt date, normalised to DD/MM/YYYY")
+    transactionAmount: str = Field(default="", description="Overall total paid, e.g. 28040.00 GBP")
+    description: str = Field(default="", description="Short description: merchant and/or what was purchased")
+
+    # Populated by the validator; surfaced by the API but not asked of the LLM.
+    detectedCurrency: str = Field(default="GBP", description="Detected ISO currency code", exclude=False)
+
+    @staticmethod
+    def field_kinds() -> dict[str, str]:
+        return {
+            "invoiceDate": DATE,
+            "transactionAmount": AMOUNT,
+            "description": TEXT,
+        }
 
     @model_validator(mode="before")
-    def default_invalid_fields(cls, values: dict) -> dict:
-        # Ensure all values are strings
-        for field in cls.model_fields:
+    def normalise(cls, values: dict) -> dict:
+        for field in ("invoiceDate", "transactionAmount", "description"):
             val = values.get(field)
             if not isinstance(val, str):
                 values[field] = str(val) if val is not None else ""
 
-        # Validate and normalise invoiceDate to DD/MM/YYYY
-        date_str = values.get("invoiceDate", "").strip()
-        date_pattern = re.compile(r"^\d{2}/\d{2}/\d{4}$")
-        if date_pattern.match(date_str):
-            p1, p2, yyyy = date_str.split("/")
-            d, m = int(p1), int(p2)
-            if m > 12 <= d:
-                # MM/DD/YYYY detected — swap to DD/MM/YYYY
-                date_str = f"{p2}/{p1}/{yyyy}"
-            elif not (1 <= d <= 31 and 1 <= m <= 12):
-                date_str = ""
-            values["invoiceDate"] = date_str
-        else:
-            values["invoiceDate"] = ""
+        # Robust date handling (US ordering, spelled-out months, ISO, etc.).
+        values["invoiceDate"] = normalize_date(values.get("invoiceDate", ""))
 
-        # Ensure transactionAmount always ends with GBP
-        amount = values.get("transactionAmount", "").strip()
-        if amount:
-            # Strip any trailing currency text and replace with GBP
-            amount = re.sub(r'\s*[A-Za-z]+$', '', amount).strip()
-            values["transactionAmount"] = f"{amount} GBP"
+        # Currency-aware amount: strips symbols/commas, enforces two decimals,
+        # keeps a detected non-GBP currency instead of forcing GBP blindly.
+        formatted, currency, ok = normalize_amount(values.get("transactionAmount", ""))
+        values["transactionAmount"] = formatted if ok else ""
+        values["detectedCurrency"] = currency
 
         return values

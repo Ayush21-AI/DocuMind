@@ -2,12 +2,16 @@ constants:
   ocrHost: &ocrHost ocr.app.example.com
   keyVault: &keyVault documind-app-platform
 
-env: 
+env:
   OLLAMA_HOST: "http://documind-ollama-ms:11434"
   MODEL_NAME: "llama3.2:latest"
   FASTAPI_PORT: 8000
   FASTAPI_HOST: ""
   TEMP_DIR: "/var/tmp"
-  LOGLEVEL: "DEBUG"
-  SYSTEM_PROMPT: ""
-  OCR_SYSTEM_PROMPT: ""
+  LOGLEVEL: "INFO"
+  NUM_CTX: 4096
+  OLLAMA_KEEP_ALIVE: "-1"
+  MAX_INVOICE_PDF_PAGES: 15
+  # Optional prompt overrides (env names must match main.py exactly):
+  # SystemPrompt: "..."
+  # ExpenseSystemPrompt: "..."

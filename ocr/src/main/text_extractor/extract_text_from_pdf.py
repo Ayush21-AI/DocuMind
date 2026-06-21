@@ -69,17 +69,26 @@ async def extract_text_from_pdf(pdf_stream: io.BytesIO, max_invoice_pdf_pages: i
 
         results: List[Tuple[int, str]] = await asyncio.gather(*tasks, return_exceptions=True)
 
-        # Sort by page index to maintain order
-        # Handle failed pages gracefully
+        # Sort successful pages by index to maintain reading order.
         sorted_results = sorted(
             (res for res in results if not isinstance(res, Exception)),
             key=lambda x: x[0]
         )
 
+        # Surface dropped pages rather than silently discarding them — a page
+        # that timed out or errored means the extracted text is incomplete.
+        dropped = [i for i, res in enumerate(results) if isinstance(res, Exception)]
+        if dropped:
+            logging.warning(
+                f"[PDF] {len(dropped)}/{len(results)} page(s) failed or timed out "
+                f"and were skipped (indices: {dropped}). Extracted text may be incomplete."
+            )
+
         final_text = "\n".join(text for _, text in sorted_results)
 
         logging.info(
-            f"[PDF] Completed processing {len(results)} pages. Final text length: {len(final_text)} characters.")
+            f"[PDF] Completed {len(sorted_results)}/{len(results)} pages. "
+            f"Final text length: {len(final_text)} characters.")
         return final_text
 
     except HTTPException:

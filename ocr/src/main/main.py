@@ -1,5 +1,6 @@
 import io
 import os
+import time
 import asyncio
 import httpx
 import logging
@@ -7,10 +8,14 @@ import uvicorn
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, HTTPException
-from fastapi.responses import ORJSONResponse
+from fastapi.responses import ORJSONResponse, PlainTextResponse
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from ocr.src.main.invoice_processor.ollama_processor import OllamaProcessor
 from ocr.src.main.model.invoice_data import InvoiceData
 from ocr.src.main.model.expense_data import ExpenseData
+from ocr.src.main.model.result import ExtractionResult
+from ocr.src.main.confidence import score_extraction
+from ocr.src.main.classifier import detect_document_type, INVOICE, EXPENSE
 from ocr.src.main.text_extractor.extract_text_from_docx import extract_text_from_docx
 from ocr.src.main.text_extractor.extract_text_from_image import extract_text_from_images
 from ocr.src.main.text_extractor.extract_text_from_pdf import extract_text_from_pdf
@@ -22,10 +27,14 @@ MODEL_NAME = os.getenv("MODEL_NAME", "llama3.2:latest")
 FASTAPI_PORT = int(os.getenv("FASTAPI_PORT", 8000))
 FASTAPI_HOST = os.getenv("FASTAPI_HOST", "0.0.0.0")
 NUM_CORES = int(os.getenv("NUM_CORES", os.cpu_count() or 2))
+NUM_CTX = int(os.getenv("NUM_CTX", 4096))
+OLLAMA_KEEP_ALIVE = os.getenv("OLLAMA_KEEP_ALIVE", "-1")
 max_invoice_pdf_pages = int(os.getenv("MAX_INVOICE_PDF_PAGES", 15))
 if max_invoice_pdf_pages <= 0:
     logging.warning("MAX_INVOICE_PDF_PAGES must be positive. Defaulting to 15.")
     max_invoice_pdf_pages = 15
+
+SUPPORTED_EXTENSIONS = (".pdf", ".png", ".jpg", ".jpeg", ".docx", ".xlsx")
 
 # System Prompt
 DEFAULT_SYSTEM_PROMPT = """\
@@ -59,7 +68,7 @@ Extract the following fields:
    - Look for labels like: "Total Due", "Total Amount", "Total", "Amount Due", or "Invoice Total" etc.
    - Extract only the overall total amount (not line item totals) 
    - Do not confuse individual line item totals with the overall total.
-   - Format: "X.XX GBP". Remove if any "£" currency symbol and append append " GBP" as a suffix.
+   - Format: "X.XX GBP". Remove any "£" currency symbol and append " GBP" as a suffix.
      For example, if the text reads "£0.50", your output should be "0.50 GBP".
 
 5. **totalVatAmount**:  
@@ -67,7 +76,7 @@ Extract the following fields:
    - Look for labels like: "VAT", "Total VAT", "VAT Amount", "Tax Amount", "Total Tax", or "Total VAT" etc.
    - Extract only the overall tax/VAT value, not line item taxes/vat.
    - Do not confuse individual line item totals with the overall total.
-   - Format: "X.XX GBP". Remove if any "£" currency symbol and append append " GBP" as a suffix.
+   - Format: "X.XX GBP". Remove any "£" currency symbol and append " GBP" as a suffix.
      For example, if the text reads "£0.50", your output should be "0.50 GBP".
 
 6. **supplierName**:  
@@ -182,23 +191,32 @@ logging.basicConfig(
     format='[%(asctime)s] %(levelname)s in %(module)s: %(message)s'
 )
 
+# ------------------ Prometheus Metrics ----------------------------
+REQUESTS = Counter("documind_requests_total", "Extraction requests", ["endpoint", "document_type"])
+FAILURES = Counter("documind_failures_total", "Failed extractions", ["endpoint"])
+LATENCY = Histogram("documind_request_seconds", "End-to-end extraction latency", ["endpoint"])
+REVIEWS = Counter("documind_review_required_total", "Results flagged for human review", ["document_type"])
+
 # ------------------ Globals ----------------------------
 shared_httpx_client: httpx.AsyncClient | None = None
 shared_invoice_processor: OllamaProcessor | None = None
 shared_expense_processor: OllamaProcessor | None = None
 
+
 # ------------------ Lifespan Context Manager ----------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global shared_httpx_client, shared_invoice_processor, shared_expense_processor
-    shared_httpx_client = httpx.AsyncClient(timeout=30.0)
+    shared_httpx_client = httpx.AsyncClient(timeout=60.0)
 
     shared_invoice_processor = OllamaProcessor(
         model_name=MODEL_NAME,
         ollama_host=OLLAMA_HOST,
         system_prompt=SYSTEM_PROMPT,
         http_client=shared_httpx_client,
-        response_model=InvoiceData
+        response_model=InvoiceData,
+        num_ctx=NUM_CTX,
+        keep_alive=OLLAMA_KEEP_ALIVE,
     )
 
     shared_expense_processor = OllamaProcessor(
@@ -207,47 +225,48 @@ async def lifespan(app: FastAPI):
         system_prompt=EXPENSE_SYSTEM_PROMPT,
         http_client=shared_httpx_client,
         response_model=ExpenseData,
-        num_predict=150
+        num_predict=150,
+        num_ctx=NUM_CTX,
+        keep_alive=OLLAMA_KEEP_ALIVE,
     )
 
     logging.info("HTTP client and processors initialized.")
     logging.info(f"OCR Engine using model: {MODEL_NAME} at {OLLAMA_HOST}")
 
-    warmup_task = asyncio.create_task(_llm_model_warmup_loop())
+    # Load the model into memory once at startup. With keep_alive=-1 it then
+    # stays resident, so no periodic ping loop is needed (Ollama >= 0.5).
+    warmup_task = asyncio.create_task(_warmup_model())
     yield
     warmup_task.cancel()
     await shared_httpx_client.aclose()
     logging.info("HTTP client closed.")
 
-async def _llm_model_warmup_loop():
-    """Send a lightweight ping to Ollama every 10s to keep the model hot."""
-    await asyncio.sleep(10)  # initial delay for Ollama to be ready
-    while True:
+
+async def _warmup_model(attempts: int = 5):
+    """Best-effort one-shot warmup that pins the model in memory."""
+    for attempt in range(1, attempts + 1):
         try:
             await shared_httpx_client.post(
-                f"{OLLAMA_HOST}/api/chat",
-                json={
-                    "model": MODEL_NAME,
-                    "messages": [
-                        {"role": "system", "content": DEFAULT_EXPENSE_SYSTEM_PROMPT},
-                        {"role": "user", "content": "ping"}
-                    ],
-                    "stream": False,
-                    "options": {"num_predict": 1}
-                },
-                timeout=30.0
+                f"{OLLAMA_HOST}/api/generate",
+                json={"model": MODEL_NAME, "prompt": "", "keep_alive": OLLAMA_KEEP_ALIVE},
+                timeout=120.0,
             )
-            logging.debug("Ollama warmup ping sent.")
+            logging.info("Ollama model warmed up and pinned in memory.")
+            return
         except Exception as e:
-            logging.warning(f"Ollama warmup ping failed: {e}")
-        await asyncio.sleep(10)
+            logging.warning(f"Warmup attempt {attempt}/{attempts} failed: {e}")
+            await asyncio.sleep(min(2 ** attempt, 30))
+    logging.error("Model warmup did not succeed; first request may be slow.")
 
 
 # ------------------ App Setup ----------------------------
 app = FastAPI(
-    title="Invoice Processing API for OCR",
+    title="DocuMind",
+    description="Self-hosted document intelligence: OCR + local LLM extraction "
+                "with per-field confidence scoring and automatic invoice/receipt routing.",
+    version="1.0.0",
     default_response_class=ORJSONResponse,
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 
@@ -267,120 +286,129 @@ async def route_to_extractor(extension: str, stream: io.BytesIO) -> str:
             raise ValueError("Unsupported file type. Only PDF, Images, DOCX, or XLSX allowed.")
 
 
-# ------------------ Main Endpoint ------------------------------
-@app.post(
-    "/process/invoice/",
-    response_model=InvoiceData,
-    summary="Process an invoice file",
-    response_description="Extracts structured invoice data using OCR and LLM",
-    responses={
-        200: {"description": "Successfully extracted invoice data"},
-        400: {"description": "Invalid file or extraction failure"},
-        500: {"description": "Unexpected server error"},
+# ------------------ Shared Extraction Pipeline ------------------------------
+def _build_result(document_type: str, model_instance, source_text: str,
+                  started: float, meta_extra: dict) -> ExtractionResult:
+    """Wrap a validated model in the confidence-scored ExtractionResult envelope."""
+    fields = model_instance.model_dump()
+    currency = fields.pop("detectedCurrency", "GBP")  # expense carries this; invoice doesn't
+    kinds = type(model_instance).field_kinds()
+    conf = score_extraction(fields, kinds, source_text)
+
+    if conf["review_required"]:
+        REVIEWS.labels(document_type=document_type).inc()
+
+    meta = {
+        "model": MODEL_NAME,
+        "elapsed_ms": round((time.perf_counter() - started) * 1000),
+        **meta_extra,
     }
-)
+    return ExtractionResult(
+        document_type=document_type,
+        fields=fields,
+        confidence=conf["per_field"],
+        overall_confidence=conf["overall"],
+        review_required=conf["review_required"],
+        currency=currency,
+        meta=meta,
+    )
+
+
+async def _extract(file: UploadFile, endpoint: str, forced_type: str | None) -> ExtractionResult:
+    """
+    The full pipeline: validate -> extract text -> (auto-)route -> LLM extract
+    -> confidence-scored envelope. `forced_type` skips auto-detection for the
+    explicit invoice/expense endpoints.
+    """
+    started = time.perf_counter()
+    filename = file.filename or "upload"
+    extension = Path(filename).suffix.lower()
+    logging.info(f"[{endpoint}] Processing {filename} ({file.content_type})")
+
+    try:
+        if extension not in SUPPORTED_EXTENSIONS:
+            raise HTTPException(status_code=400,
+                                detail=f"Invalid file type. Supported: {', '.join(SUPPORTED_EXTENSIONS)}")
+
+        content = await file.read()
+        text = await route_to_extractor(extension, io.BytesIO(content))
+        if not text.strip():
+            raise HTTPException(status_code=400, detail="No text extracted from file")
+        logging.info(f"[{endpoint}] Extracted {len(text)} chars of text")
+
+        if forced_type:
+            document_type, routing_confidence = forced_type, 1.0
+        else:
+            document_type, routing_confidence = detect_document_type(text)
+            logging.info(f"[{endpoint}] Auto-detected '{document_type}' (conf={routing_confidence})")
+
+        processor = shared_invoice_processor if document_type == INVOICE else shared_expense_processor
+        assert processor is not None, "Processor is not initialized."
+        model_instance = await processor.extract_data(text)
+
+        result = _build_result(
+            document_type, model_instance, text, started,
+            {"routing_confidence": routing_confidence, "text_chars": len(text)},
+        )
+        REQUESTS.labels(endpoint=endpoint, document_type=document_type).inc()
+        LATENCY.labels(endpoint=endpoint).observe(time.perf_counter() - started)
+        logging.info(f"[{endpoint}] Result: {result.model_dump()}")
+        return result
+
+    except ValueError as ve:
+        FAILURES.labels(endpoint=endpoint).inc()
+        logging.error(f"[{endpoint}] Extractor failed: {ve}")
+        raise HTTPException(status_code=400, detail=str(ve))
+    except HTTPException:
+        FAILURES.labels(endpoint=endpoint).inc()
+        raise
+    except Exception as e:
+        FAILURES.labels(endpoint=endpoint).inc()
+        logging.exception(f"[{endpoint}] Unexpected error")
+        raise HTTPException(status_code=500, detail="Internal server error: " + str(e))
+    finally:
+        await file.close()
+
+
+# ------------------ Endpoints ------------------------------
+@app.post("/extract", response_model=ExtractionResult,
+          summary="Auto-detect document type and extract",
+          response_description="Detects invoice vs receipt, extracts fields, scores confidence")
+async def extract(file: UploadFile):
+    """One endpoint for any document — classifies invoice vs receipt and routes
+    to the correct schema automatically."""
+    return await _extract(file, "extract", None)
+
+
+@app.post("/process/invoice/", response_model=ExtractionResult,
+          summary="Process an invoice file (8 fields)")
 async def process_invoice(file: UploadFile):
-    filename = file.filename
-    extension = Path(filename).suffix.lower()
-    content_type = file.content_type
-
-    logging.info(f"Processing file: {filename} (type: {content_type})")
-
-    try:
-        if extension not in [".pdf", ".png", ".jpg", ".jpeg", ".docx", ".xlsx"]:
-            raise HTTPException(status_code=400, detail="Invalid file type.")
-
-        file_content = await file.read()
-        file_stream = io.BytesIO(file_content)
-
-        extracted_text = await route_to_extractor(extension, file_stream)
-        if not extracted_text.strip():
-            raise HTTPException(status_code=400, detail="No text extracted from file")
-        logging.info(f"Extracted text length: {len(extracted_text)}")
-        logging.info(f"Extracted text data: \n {extracted_text}")
-
-        assert shared_invoice_processor is not None, "Invoice processor is not initialized."
-        result = await shared_invoice_processor.extract_data(extracted_text)
-        logging.info(f"Extracted invoice data: {result.model_dump()}")
-        return result
-
-    except ValueError as ve:
-        logging.error(f"Extractor failed: {ve}")
-        raise HTTPException(status_code=400, detail=str(ve))
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logging.exception("Unexpected error during invoice processing")
-        raise HTTPException(status_code=500, detail="Internal server error: " + str(e))
-
-    finally:
-        await file.close()
+    return await _extract(file, "invoice", INVOICE)
 
 
-# ------------------ Expense Endpoint ------------------------------
-@app.post(
-    "/process/income/expenses/invoice/",
-    response_model=ExpenseData,
-    summary="Process an expense document",
-    response_description="Extracts 3 fields (invoiceDate, transactionAmount, Description) using OCR and LLM",
-    responses={
-        200: {"description": "Successfully extracted expense data"},
-        400: {"description": "Invalid file or extraction failure"},
-        500: {"description": "Unexpected server error"},
-    }
-)
+@app.post("/process/income/expenses/invoice/", response_model=ExtractionResult,
+          summary="Process an expense/receipt document (3 fields)")
 async def process_expense(file: UploadFile):
-    filename = file.filename
-    extension = Path(filename).suffix.lower()
-    content_type = file.content_type
-
-    logging.info(f"Processing expense file: {filename} (type: {content_type})")
-
-    try:
-        if extension not in [".pdf", ".png", ".jpg", ".jpeg", ".docx", ".xlsx"]:
-            raise HTTPException(status_code=400, detail="Invalid file type.")
-
-        file_content = await file.read()
-        file_stream = io.BytesIO(file_content)
-
-        extracted_text = await route_to_extractor(extension, file_stream)
-        if not extracted_text.strip():
-            raise HTTPException(status_code=400, detail="No text extracted from file")
-        logging.info(f"Extracted text length: {len(extracted_text)}")
-        logging.info(f"Extracted text data: \n {extracted_text}")
-
-        assert shared_expense_processor is not None, "Expense processor is not initialized."
-        result = await shared_expense_processor.extract_data(extracted_text)
-        logging.info(f"Extracted expense data: {result.model_dump()}")
-        return result
-
-    except ValueError as ve:
-        logging.error(f"Extractor failed: {ve}")
-        raise HTTPException(status_code=400, detail=str(ve))
-
-    except HTTPException:
-        raise
-
-    except Exception as e:
-        logging.exception("Unexpected error during expense processing")
-        raise HTTPException(status_code=500, detail="Internal server error: " + str(e))
-
-    finally:
-        await file.close()
+    return await _extract(file, "expense", EXPENSE)
 
 
-# ------------------ Health Check ------------------------------
+# ------------------ Health Check & Metrics ------------------------------
 @app.get("/status")
 async def health_check():
     return {
-        "status": "ok", "message": "OCR Processor Service is up and ready to serve!" if shared_invoice_processor else "error",
+        "status": "ok" if shared_invoice_processor else "error",
+        "message": "DocuMind service is up and ready to serve!" if shared_invoice_processor else "not initialized",
         "ollama_host": OLLAMA_HOST,
         "model": MODEL_NAME,
         "cores": NUM_CORES,
-        "initialized": bool(shared_invoice_processor)
+        "num_ctx": NUM_CTX,
+        "initialized": bool(shared_invoice_processor),
     }
+
+
+@app.get("/metrics", summary="Prometheus metrics")
+async def metrics():
+    return PlainTextResponse(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 # --------------------------------------------------------------------------

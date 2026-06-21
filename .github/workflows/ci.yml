@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: Lint, test & evaluate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r ocr/requirements.txt
+
+      - name: Byte-compile (syntax check)
+        run: python -m compileall ocr/src evaluate.py
+
+      - name: Run test suite
+        run: pytest
+
+      - name: Accuracy regression (eval harness)
+        run: python evaluate.py

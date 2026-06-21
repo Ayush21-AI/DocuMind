@@ -1,0 +1,50 @@
+[
+  {
+    "file": "acme_invoice.pdf",
+    "document_type": "invoice",
+    "fields": {
+      "invoiceNumber": "INV-2024-001",
+      "invoiceDate": "15/03/2024",
+      "totalInvoiceAmount": "1500.50 GBP",
+      "totalVatAmount": "300.10 GBP",
+      "supplierName": "Acme Corp Ltd",
+      "bankAccountSortCode": "20-15-82"
+    }
+  },
+  {
+    "file": "globex_invoice.pdf",
+    "document_type": "invoice",
+    "fields": {
+      "invoiceNumber": "INV-887",
+      "invoiceDate": "02/04/2024",
+      "totalInvoiceAmount": "980.00 GBP",
+      "totalVatAmount": "163.33 GBP",
+      "supplierName": "Globex Ltd",
+      "bankAccountSortCode": "11-22-33"
+    }
+  },
+  {
+    "file": "initech_receipt.png",
+    "document_type": "invoice",
+    "fields": {
+      "invoiceNumber": "BILL-55",
+      "invoiceDate": "21/01/2024",
+      "totalInvoiceAmount": "240.00 GBP",
+      "totalVatAmount": "",
+      "supplierName": "Initech",
+      "bankAccountSortCode": ""
+    }
+  },
+  {
+    "file": "umbrella_invoice.pdf",
+    "document_type": "invoice",
+    "fields": {
+      "invoiceNumber": "INV-2024-019",
+      "invoiceDate": "30/06/2024",
+      "totalInvoiceAmount": "5400.00 GBP",
+      "totalVatAmount": "900.00 GBP",
+      "supplierName": "Umbrella Corp",
+      "bankAccountSortCode": "40-11-22"
+    }
+  }
+]
