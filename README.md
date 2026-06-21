@@ -5,6 +5,7 @@ financial documents — PDFs, scans, photos, Word, Excel — into clean, validat
 **confidence-scored** JSON, using a two-stage OCR + local-LLM pipeline. No cloud
 APIs, no keys, no data leaving your infrastructure.
 
+[![CI](https://github.com/Ayush21-AI/DocuMind/actions/workflows/ci.yml/badge.svg)](https://github.com/Ayush21-AI/DocuMind/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
 ![FastAPI](https://img.shields.io/badge/FastAPI-async-009688?logo=fastapi&logoColor=white)
 ![Llama 3.2](https://img.shields.io/badge/LLM-Llama_3.2_(local)-000000)
