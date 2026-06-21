@@ -47,7 +47,3 @@ python-dateutil==2.9.0.post0
 # Observability (/metrics endpoint)
 prometheus-client==0.23.1
 
-# === Testing (dev) ===
-pytest==8.4.1
-pytest-asyncio==1.2.0
-

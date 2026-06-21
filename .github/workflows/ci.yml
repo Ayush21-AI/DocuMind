@@ -19,7 +19,7 @@ jobs:
           cache: pip
 
       - name: Install dependencies
-        run: pip install -r ocr/requirements.txt
+        run: pip install -r ocr/requirements-dev.txt
 
       - name: Byte-compile (syntax check)
         run: python -m compileall ocr/src evaluate.py

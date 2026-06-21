@@ -133,8 +133,9 @@ uvicorn ocr.src.main.main:app --host 0.0.0.0 --port 8000 --reload
 ## Testing & evaluation
 
 ```bash
-pytest                 # 37 unit tests (extractors, validators, confidence, parsing)
-python evaluate.py     # field-level accuracy report
+pip install -r ocr/requirements-dev.txt   # runtime deps + pytest
+pytest                                     # 37 unit tests (validators, confidence, parsing)
+python evaluate.py                         # field-level accuracy report
 ```
 
 Tests are pure-Python and mock the LLM, so the suite runs in <1s with no model.

@@ -1,0 +1,12 @@
+# Build context is ./ocr — keep caches and dev-only files out of the image.
+__pycache__
+*.pyc
+.pytest_cache
+.coverage
+htmlcov
+.venv
+venv
+env
+.DS_Store
+requirements-dev.txt
+helm
