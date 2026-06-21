@@ -1,0 +1,5 @@
+# Demo-only dependencies (the offline sample tab needs no LLM/OCR stack).
+gradio>=4.44
+requests>=2.32
+pydantic>=2.10
+python-dateutil>=2.9
